@@ -375,6 +375,7 @@
     <div class="topbar-group-chip" id="topbarChip" style="display:none"></div>
   </div>
   <div style="display:flex;gap:10px;align-items:center">
+    <span id="syncDot" title="Syncing…" style="width:7px;height:7px;border-radius:50%;background:var(--sage);opacity:0;transition:opacity 0.3s;flex-shrink:0"></span>
     <button class="btn-admin-open" onclick="openAdminModal()">⚙ Admin</button>
   </div>
 </div>
@@ -433,9 +434,17 @@ const GROUPS = [
 ];
 
 // ══════════════════════════════════════════════════════
+//  ▼▼▼ PASTE YOUR X-MASTER-KEY HERE ▼▼▼
+// ══════════════════════════════════════════════════════
+const JSONBIN_KEY    = '$2a$10$fFqndGqialg0nfln.4CpU.YY.xDzDDKxNo5eNZSlVu634xu41Lt3q';
+const JSONBIN_BIN_ID = '69ec4b91856a6821896e1fb1';
+const JSONBIN_URL    = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`;
+// ══════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════
 //  STATE
 // ══════════════════════════════════════════════════════
-const posts = [];
+let posts = [];  // always a mirror of what's in JSONBin
 const MY_SESSION_ID = Math.random().toString(36).slice(2);
 
 // Currently signed-in group (id string or null)
@@ -444,6 +453,64 @@ let activeGroupId = null;
 // Admin modal state
 let adminAuthed = false;
 let activeTab   = 'posts';
+let isSyncing   = false; // prevent overlapping saves
+
+// ══════════════════════════════════════════════════════
+//  JSONBIN SYNC
+// ══════════════════════════════════════════════════════
+
+// Load all posts from JSONBin
+async function loadPosts() {
+  try {
+    showSyncIndicator(true);
+    const res = await fetch(JSONBIN_URL + '/latest', {
+      headers: { 'X-Master-Key': JSONBIN_KEY }
+    });
+    if (!res.ok) throw new Error('Load failed');
+    const data = await res.json();
+    posts = data.record.posts || [];
+    renderPosts();
+    if (adminAuthed) renderAdminModal();
+  } catch (e) {
+    showToast('⚠ Could not load posts', 'error');
+  } finally {
+    showSyncIndicator(false);
+  }
+}
+
+// Save current posts array back to JSONBin
+async function savePosts() {
+  if (isSyncing) return;
+  isSyncing = true;
+  try {
+    showSyncIndicator(true);
+    const res = await fetch(JSONBIN_URL, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Master-Key': JSONBIN_KEY
+      },
+      body: JSON.stringify({ posts })
+    });
+    if (!res.ok) throw new Error('Save failed');
+  } catch (e) {
+    showToast('⚠ Could not save post', 'error');
+  } finally {
+    isSyncing = false;
+    showSyncIndicator(false);
+  }
+}
+
+function showSyncIndicator(active) {
+  const el = document.getElementById('syncDot');
+  if (el) el.style.opacity = active ? '1' : '0';
+}
+
+// Poll for new posts every 8 seconds so all devices stay in sync
+setInterval(async () => {
+  if (document.hidden) return; // don't poll if tab is not visible
+  await loadPosts();
+}, 8000);
 
 // ══════════════════════════════════════════════════════
 //  HELPERS
@@ -748,7 +815,7 @@ function updateThreat(text) {
   fill.style.background = score < 40 ? 'var(--warn)' : 'var(--rust)';
 }
 
-function handleSubmit() {
+async function handleSubmit() {
   if (!activeGroupId) return;
   const m = document.getElementById('message');
   if (!m.value.trim()) { showToast('Message cannot be empty', 'error'); m.focus(); return; }
@@ -769,6 +836,8 @@ function handleSubmit() {
   document.getElementById('msgCounter').textContent = '0 / 500';
   updateThreat('');
   renderPosts();
+  showToast('✓ Posting…', 'success');
+  await savePosts();
   showToast('✓ Message posted', 'success');
 }
 
@@ -965,21 +1034,23 @@ function setGroupPassword(groupId) {
 }
 
 // ── Posts ──
-function deletePost(id) {
+async function deletePost(id) {
   const idx = posts.findIndex(p => p.id === id);
   if (idx === -1) return;
   posts.splice(idx, 1);
   renderPosts();
   renderAdminModal();
   showToast('✓ Post deleted', 'success');
+  await savePosts();
 }
 
-function deleteAllPosts() {
+async function deleteAllPosts() {
   if (!confirm(`Delete all ${posts.length} post${posts.length > 1 ? 's' : ''}? This cannot be undone.`)) return;
   posts.length = 0;
   renderPosts();
   renderAdminModal();
   showToast('✓ All posts deleted', 'success');
+  await savePosts();
 }
 
 // ── Admin password ──
@@ -1039,12 +1110,13 @@ function applyTitle() {
 }
 
 // ── Toggle done ──
-function toggleDone(id) {
+async function toggleDone(id) {
   const post = posts.find(p => p.id === id);
   if (!post) return;
   post.done = !post.done;
   renderPosts();
   showToast(post.done ? '✓ Marked as done' : 'Marked as active', post.done ? 'success' : '');
+  await savePosts();
 }
 
 // ══════════════════════════════════════════════════════
@@ -1053,6 +1125,7 @@ function toggleDone(id) {
 renderTopbarChip();
 renderPosts();
 renderFormPanel();
+loadPosts(); // fetch from JSONBin on startup
 </script>
 </body>
 </html>
